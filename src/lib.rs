@@ -1,7 +1,9 @@
-use axum::routing::{post, Router};
-
 use futures_util::StreamExt;
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::future::Future;
+use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::Arc;
 
 struct Transaction {
@@ -28,15 +30,51 @@ async fn handler_inner(ctx: Context) {
     ctx.0.streaming_work(iter.into_iter()).await;
 }
 
-async fn handler() -> Result<String, String> {
+async fn handler() {
     let ctx = Context(Arc::new(Service()));
     handler_inner(ctx).await;
-    Ok("ok".to_string())
 }
 
 // or comment out router
-pub async fn router() -> Router {
-    Router::new().route("/bla", post(handler))
+pub async fn router() {
+    let _: MethodRouter<()> = post(handler);
+}
+
+pub fn post<H, T, S>(handler: H) -> MethodRouter<S, Infallible>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    let _ = handler;
+    MethodRouter {
+        _s: PhantomData,
+        _e: PhantomData,
+    }
+}
+
+pub trait Handler<T, S>: Clone + Send + Sync + Sized + 'static {
+    type Future: Future<Output = ()> + Send + 'static;
+
+    fn call(self, state: S) -> Self::Future;
+}
+
+impl<F, Fut, S> Handler<((),), S> for F
+where
+    F: FnOnce() -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send,
+    S: Clone + Send + Sync + 'static,
+{
+    type Future = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    fn call(self, _state: S) -> Self::Future {
+        Box::pin(async move { self().await })
+    }
+}
+
+pub struct MethodRouter<S = (), E = Infallible> {
+    _s: PhantomData<S>,
+    _e: PhantomData<E>,
 }
 
 #[derive(Clone)]
